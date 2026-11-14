@@ -1,0 +1,237 @@
+name: Uygulamayi derle
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # Baska bir site icin sadece bu dort satiri degistir.
+  APP_NAME: CizgiMasasi
+  DISPLAY_NAME: "Çizgi Masası"
+  BUNDLE_ID: com.cizgimasasi.app
+  SITE_URL: "https://claude.ai/artifact/6KmtrkS5mFJUCrfiLoHfFP"
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kaynak dosyalari olustur
+        run: |
+          mkdir -p Sources/Assets.xcassets/AppIcon.appiconset
+
+          cat > Sources/App.swift <<'SWIFT'
+          import SwiftUI
+          import WebKit
+
+          private let siteURL = URL(string: "__SITE_URL__")!
+
+          // Uygulama bu sureden uzun arka planda kaldiysa, geri donuldugunde
+          // sayfa kendiliginden yenilenir. Saniye cinsinden.
+          private let staleAfter: TimeInterval = 10 * 60
+
+          @main
+          struct SiteApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      ContentView()
+                  }
+              }
+          }
+
+          struct ContentView: View {
+              @Environment(\.scenePhase) private var scenePhase
+              @State private var reloadToken = 0
+              @State private var leftAt: Date?
+
+              var body: some View {
+                  WebView(url: siteURL, reloadToken: reloadToken)
+                      .background(Color.black)
+                      .ignoresSafeArea(edges: .bottom)
+                      .onChange(of: scenePhase) { _, phase in
+                          switch phase {
+                          case .background:
+                              leftAt = Date()
+                          case .active:
+                              if let leftAt, Date().timeIntervalSince(leftAt) > staleAfter {
+                                  reloadToken += 1
+                              }
+                              leftAt = nil
+                          default:
+                              break
+                          }
+                      }
+              }
+          }
+
+          struct WebView: UIViewRepresentable {
+              let url: URL
+              let reloadToken: Int
+
+              func makeCoordinator() -> Coordinator { Coordinator() }
+
+              func makeUIView(context: Context) -> WKWebView {
+                  let config = WKWebViewConfiguration()
+                  config.allowsInlineMediaPlayback = true
+
+                  let webView = WKWebView(frame: .zero, configuration: config)
+                  webView.customUserAgent =
+                      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 "
+                      + "(KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+                  webView.allowsBackForwardNavigationGestures = true
+                  webView.isOpaque = false
+                  webView.backgroundColor = .black
+                  webView.scrollView.backgroundColor = .black
+                  webView.navigationDelegate = context.coordinator
+
+                  let refresh = UIRefreshControl()
+                  refresh.addTarget(
+                      context.coordinator,
+                      action: #selector(Coordinator.pulledToRefresh(_:)),
+                      for: .valueChanged
+                  )
+                  webView.scrollView.refreshControl = refresh
+
+                  context.coordinator.webView = webView
+                  webView.load(URLRequest(url: url))
+                  return webView
+              }
+
+              func updateUIView(_ webView: WKWebView, context: Context) {
+                  guard context.coordinator.lastToken != reloadToken else { return }
+                  context.coordinator.lastToken = reloadToken
+                  if !webView.isLoading {
+                      webView.reload()
+                  }
+              }
+
+              final class Coordinator: NSObject, WKNavigationDelegate {
+                  weak var webView: WKWebView?
+                  var lastToken = 0
+
+                  @objc func pulledToRefresh(_ sender: UIRefreshControl) {
+                      webView?.reload()
+                  }
+
+                  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+                      webView.scrollView.refreshControl?.endRefreshing()
+                  }
+
+                  func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+                      webView.scrollView.refreshControl?.endRefreshing()
+                  }
+
+                  func webView(
+                      _ webView: WKWebView,
+                      didFailProvisionalNavigation navigation: WKNavigation!,
+                      withError error: Error
+                  ) {
+                      webView.scrollView.refreshControl?.endRefreshing()
+                  }
+              }
+          }
+          SWIFT
+          sed -i '' "s|__SITE_URL__|${SITE_URL}|" Sources/App.swift
+
+          cat > Sources/Assets.xcassets/Contents.json <<'JSON'
+          {"info":{"author":"xcode","version":1}}
+          JSON
+
+          cat > Sources/Assets.xcassets/AppIcon.appiconset/Contents.json <<'JSON'
+          {"images":[{"filename":"icon.png","idiom":"universal","platform":"ios","size":"1024x1024"}],"info":{"author":"xcode","version":1}}
+          JSON
+
+          cat > project.yml <<YAML
+          name: ${APP_NAME}
+          options:
+            deploymentTarget:
+              iOS: "17.0"
+          targets:
+            ${APP_NAME}:
+              type: application
+              platform: iOS
+              sources: [Sources]
+              settings:
+                base:
+                  PRODUCT_BUNDLE_IDENTIFIER: ${BUNDLE_ID}
+                  GENERATE_INFOPLIST_FILE: "YES"
+                  INFOPLIST_KEY_CFBundleDisplayName: "${DISPLAY_NAME}"
+                  INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+                  INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+                  ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+                  MARKETING_VERSION: "1.0"
+                  CURRENT_PROJECT_VERSION: "${GITHUB_RUN_NUMBER}"
+                  TARGETED_DEVICE_FAMILY: "1,2"
+                  SWIFT_VERSION: "5.0"
+          schemes:
+            ${APP_NAME}:
+              build:
+                targets:
+                  ${APP_NAME}: all
+          YAML
+
+      - name: Ikonu hazirla
+        run: |
+          ICON=Sources/Assets.xcassets/AppIcon.appiconset/icon.png
+          if [ -f icon.png ]; then
+            # Depoya icon.png yuklendiyse onu kullan.
+            sips -s format png -z 1024 1024 icon.png --out "$ICON"
+          else
+            # Yoksa duz koyu renkli gecici bir ikon uret.
+          python3 - "$ICON" <<'PY'
+          import struct, sys, zlib
+          w = h = 1024
+          raw = (b"\x00" + bytes((14, 17, 22)) * w) * h
+          def chunk(tag, data):
+              return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+          png = (b"\x89PNG\r\n\x1a\n"
+                 + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                 + chunk(b"IDAT", zlib.compress(raw, 9))
+                 + chunk(b"IEND", b""))
+          open(sys.argv[1], "wb").write(png)
+          PY
+          fi
+
+      - name: Projeyi olustur
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Derle
+        run: |
+          xcodebuild \
+            -project "${APP_NAME}.xcodeproj" \
+            -scheme "${APP_NAME}" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: IPA paketle
+        run: |
+          mkdir Payload
+          cp -R "build/Build/Products/Release-iphoneos/${APP_NAME}.app" Payload/
+          zip -qry "${APP_NAME}.ipa" Payload
+
+      - name: Yedek olarak sakla
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipa
+          path: ${{ env.APP_NAME }}.ipa
+
+      - name: Indirme sayfasina koy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${GITHUB_RUN_NUMBER}" "${APP_NAME}.ipa" \
+            --title "${DISPLAY_NAME} (${GITHUB_RUN_NUMBER})" \
+            --notes "AltStore veya SideStore ile yuklenir."
