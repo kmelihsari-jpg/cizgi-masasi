@@ -14,6 +14,8 @@ env:
   DISPLAY_NAME: "Çizgi Masası"
   BUNDLE_ID: com.cizgimasasi.app
   SITE_URL: "https://claude.ai/artifact/6KmtrkS5mFJUCrfiLoHfFP"
+  # Sitenin alt menu cubugunun rengi; ekranin en altindaki serit bu renge boyanir.
+  BAR_RGB: "14, 17, 22"
 
 jobs:
   build:
@@ -35,6 +37,9 @@ jobs:
           // sayfa kendiliginden yenilenir. Saniye cinsinden.
           private let staleAfter: TimeInterval = 10 * 60
 
+          // Sitenin alt menu cubugunun rengi (kirmizi, yesil, mavi).
+          private let barRGB: [Double] = [__BAR_RGB__]
+
           @main
           struct SiteApp: App {
               var body: some Scene {
@@ -51,7 +56,16 @@ jobs:
 
               var body: some View {
                   WebView(url: siteURL, reloadToken: reloadToken)
-                      .background(Color.black.ignoresSafeArea())
+                      .background(
+                          // Ust taraf sayfa zemini, alt serit menu cubugunun rengi:
+                          // boylece alt menu ekranin dibine kadar uzanmis gorunur.
+                          VStack(spacing: 0) {
+                              Color.black
+                              Color(red: barRGB[0] / 255, green: barRGB[1] / 255, blue: barRGB[2] / 255)
+                                  .frame(height: 80)
+                          }
+                          .ignoresSafeArea()
+                      )
                       .onChange(of: scenePhase) { _, phase in
                           switch phase {
                           case .background:
@@ -189,6 +203,7 @@ jobs:
           }
           SWIFT
           sed -i '' "s|__SITE_URL__|${SITE_URL}|" Sources/App.swift
+          sed -i '' "s|__BAR_RGB__|${BAR_RGB}|" Sources/App.swift
 
           cat > Sources/Assets.xcassets/Contents.json <<'JSON'
           {"info":{"author":"xcode","version":1}}
